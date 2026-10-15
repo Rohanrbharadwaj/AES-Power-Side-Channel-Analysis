@@ -29,7 +29,7 @@
 
 \section{Problem}
 
-We are given 100{,}000 power traces (200 samples each) from an AES-128 FPGA core, together with the ciphertext of every encryption. Plaintexts and keys are withheld.
+We are given 100{,}000 power traces (200 samples each) from an AES-128 FPGA core, together with the ciphertext column of every encryption. Plaintexts and keys are withheld.
 
 The core implements a recent class of side-channel countermeasure. Instead of hiding the key, it wires a \emph{fake} key into the final round and uses a small precomputed lookup table (LUT) to cancel it, so the device still outputs correct AES ciphertext under its real key. The intent is that a standard CPA attack converges confidently to a key the device never uses.
 
@@ -48,7 +48,7 @@ At the final clock edge, register cell $j$ changes from $S_9[j]$ to its new valu
 h_i[k] = \HW\!\big(\ISb(C[i]\oplus k)\oplus C[\mathrm{INV\_SR}[i]]\big).
 \label{eq:hd}
 \end{equation}
-Here INV\_SR is $[0,5,10,15,4,9,14,3,8,13,2,7,12,1,6,11]$, with byte numbering in column-major order.
+Here $C$ is the value in the file's ciphertext column, $\mathrm{INV\_SR}$ is $[0,5,10,15,4,9,14,3,8,13,2,7,12,1,6,11]$, and byte numbering is column-major.
 
 \subsection{Procedure}
 Let $T\in\mathbb{R}^{N\times200}$ be the traces and $H_i\in\mathbb{R}^{N\times256}$ the predictions (\ref{eq:hd}). After centring and normalising columns, the correlation matrix is
@@ -115,19 +115,21 @@ Rate & 0.00 & 0.05 & 0.10 & 0.35 & 0.60 & 0.85 & 1.00 & 1.00 & 1.00\\
 
 \section{The Actual Key}
 
-\subsection{The LUT is a constant XOR}
-Let $Y = \mathrm{SR}(\Sb(S_9))$. The protected datapath computes $X = Y\oplus F$ with the fake key $F$, and the LUT output must equal the correct ciphertext $C = Y\oplus R$ for every $Y$, where $R = RK_{10}$. Substituting $Y = X\oplus F$:
+\subsection{What the file contains, and why the attack recovers $F$}
+Let $C$ be the value in the ciphertext column of the CSV. Because the final AddRoundKey in the protected design uses the fake key $F$ in place of the real round-10 key $R$, the register value at the end of round 10 is $C = Y \oplus F$, where $Y = \mathrm{SR}(\Sb(S_9))$. The correcting LUT downstream of the register must turn this into the correct AES ciphertext $Y \oplus R$ for every possible $Y$. The only function that does so is a plain XOR:
 \begin{equation}
-L(X) = X \oplus F \oplus R = X \oplus \Delta, \qquad \Delta = F\oplus R.
+L(C) = C \oplus F \oplus R = C \oplus \Delta, \qquad \Delta = F\oplus R.
 \end{equation}
-The LUT is therefore functionally a constant XOR, and recovering $R$ is equivalent to recovering $\Delta$. This is a statement about the function the LUT computes. It does not by itself say anything about how much the physical implementation leaks: intermediate values, switching activity, glitches and routing effects can still carry information about $\Delta$ even when the input--output function is a plain XOR.
+The file column is the \emph{pre-correction} register value $C$, not the corrected ciphertext $Y\oplus R$. That is why the CPA attack in Section II, which assumes the standard AES final round, recovers $F$ and not $R$.
+
+This analysis is about the function the LUT computes. It does not by itself say anything about how much the physical implementation leaks: intermediate values, switching activity, glitches and routing effects can still carry information about $\Delta$ even when the input--output function is a plain XOR.
 
 \subsection{What we tried}
 We attacked the LUT with a set of first-order CPA models chosen to cover the natural candidates: $\HW(C[i]\oplus\delta)$, $\HW(\Sb(C[i]\oplus\delta))$, $\HW(\ISb(C[i]\oplus\delta))$ and three Hamming-distance variants against $C[\mathrm{INV\_SR}[i]]$. Each was run over the full 200-sample window and over windows centred on every visible clock edge. The only model that produced a strong peak was the round-register Hamming distance model, and it recovers $\delta = F$ exactly: the fake key again, not the actual key. Every model that targets the LUT directly gave median winner/runner-up ratios of 1.00--1.14, indistinguishable from noise.
 
 We then ran a bivariate centered-product CPA: for each byte, we correlated the model against the product of two centred trace samples over all pairs $(t_1,t_2)$ with $t_1\in[40,60)$ and $t_2\in[42,120)$. This catches leaks in which two samples jointly depend on $\delta$. Median ratios were 1.00 for $\HW(C[i]\oplus\delta)$ and 1.05 for $\HW(\ISb(C[i]\oplus\delta))$, with no consistent peak sample across bytes.
 
-The constant-XOR structure predicts this: any first-order statistic of the LUT input $X = C\oplus\Delta$ is a deterministic function of the observed ciphertext and $\Delta$, and the register transition $X\to C$ has fixed Hamming weight $\HW(\Delta)$ on every trace, so it carries no data-dependent signal. It does not, however, rule out a leak that lives in a higher-order combination of internal LUT nodes, a profiled template on the LUT's internals, or an implementation-specific effect we did not model.
+The constant-XOR structure has one consequence relevant to the register: the transition $C \to Y \oplus R$ at the LUT output toggles a fixed number of bits per trace, $\HW(\Delta)$, so the correcting stage does not itself carry $\Delta$-dependent signal in a first-order single-sample model. This does not explain the failure of the LUT-input models. If the LUT implementation leaked the Hamming weight of its input, the models $\HW(C[i]\oplus\delta)$ and $\HW(\Sb(C[i]\oplus\delta))$ would each show a peak at the correct $\delta$. What we observe instead is that none of them do, on any window we tried, across all 16 bytes. That is an empirical property of this particular trace set, not a consequence of the algebra.
 
 \subsection{Outcome}
 Within the attack class we tested --- first-order CPA on the LUT input and second-order centered-product CPA, over the given trace set --- the actual round-10 key was not recovered. The countermeasure held up against that class. We state this as a limitation of the specific experiments, not as a proof that no attack can recover the key.
@@ -139,7 +141,8 @@ The attack is pure Python + NumPy + pandas + matplotlib. Modules:
 \centering
 \caption{Source modules}
 \label{tab:modules}
-\begin{tabular}{@{}ll@{}}
+\footnotesize
+\begin{tabular}{@{}p{0.42\columnwidth}p{0.50\columnwidth}@{}}
 \toprule
 File & Purpose\\
 \midrule
@@ -148,8 +151,12 @@ File & Purpose\\
 \texttt{load.py}           & CSV parse + cache as \texttt{.npy}\\
 \texttt{cpa.py}            & Leakage model and vectorised CPA\\
 \texttt{characterise.py}   & Rank vs traces, success rate\\
-\texttt{bonus.py}, \texttt{bonus2.py}, \texttt{bonus3.py}, \texttt{bonus\_bivar.py} & Actual-key attempts\\
-\texttt{plots.py}, \texttt{run\_all.py} & Figures and pipeline\\
+\texttt{bonus.py}          & Univariate actual-key attempts\\
+\texttt{bonus2.py}         & Full pairwise bivariate sweep\\
+\texttt{bonus3.py}         & Wide univariate model sweep\\
+\texttt{bonus\_bivar.py}   & Bivariate centered-product CPA\\
+\texttt{plots.py}          & Report figures\\
+\texttt{run\_all.py}       & End-to-end pipeline\\
 \bottomrule
 \end{tabular}
 \end{table}
