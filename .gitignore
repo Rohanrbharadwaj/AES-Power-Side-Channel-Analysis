@@ -1,0 +1,8 @@
+data/
+out/
+__pycache__/
+*.npy
+*.npz
+*.pyc
+Round10_traces.csv
+*.zip
